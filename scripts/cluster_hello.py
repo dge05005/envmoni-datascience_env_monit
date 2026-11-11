@@ -1,3 +1,5 @@
+#Author Seoyoung KIM
+
 # scripts/cluster_hello.py: bootstrap a synthetic GPP series
 import math, os, random, socket, sys
 
