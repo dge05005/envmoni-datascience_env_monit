@@ -1,0 +1,504 @@
+---
+title: "Data summary of my five flux towers"
+author: "SEOYOUNG KIM"
+date: today
+format:
+  html:
+    toc: true
+    embed-resources: true
+execute:
+  warning: false
+  dir: ".."
+---
+
+
+```{python}
+# Standard library
+import zipfile
+from pathlib import Path
+print("rendering cwd:", Path.cwd())
+
+# Third-party libraries
+import geopandas as gpd
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from IPython.display import display
+
+# Set the style for the plots
+plt.style.use('seaborn-v0_8-whitegrid')
+plt.rcParams['font.size'] = 10
+```
+
+## C1. Site Overview
+```{python}
+# 1. Snapshot CSV load(only five)
+ROOT = Path.cwd()
+if not (ROOT / "data").exists():
+    ROOT = ROOT.parent
+
+snapshot = pd.read_csv(ROOT / 'data/snapshots/fluxnet_shuttle_snapshot_20261113T113806.csv')
+
+
+target_sites = ['US-MOz', 'IL-Yat', 'JP-SMF', 'CH-Fru', 'IT-BCi']
+snapshot = snapshot[snapshot['site_id'].isin(target_sites)].reset_index(drop=True)
+
+snapshot['site_id'] = snapshot['site_id'].str.strip()
+snapshot['country'] = snapshot['site_id'].str[:2]
+snapshot.head(2)
+
+# 2. table
+table_cols = {
+    'site_id': 'Site ID',
+    'site_name': 'Name',
+    'country': 'Country',
+    'igbp': 'IGBP',
+    'location_lat': 'Latitude',
+    'location_long': 'Longitude',
+    'first_year': 'First Year',
+    'last_year': 'Last Year',
+    'data_hub': 'Hub',
+    'product_citation': 'Citation'
+}
+
+site_summary = snapshot[list(table_cols.keys())].drop_duplicates(subset=['site_id']).rename(columns=table_cols)
+
+display(site_summary)
+
+
+# 3. Map of the five flux towers
+
+#| label: fig-map
+#| fig-cap: "Locations of the five FLUXNET flux towers"
+
+import matplotlib.pyplot as plt
+
+# worldmap site
+url = "https://naciscdn.org/naturalearth/110m/cultural/ne_110m_admin_0_countries.zip"
+world = gpd.read_file(url)
+
+# target5 tower
+target_sites = ['US-MOz', 'IL-Yat', 'JP-SMF', 'CH-Fru', 'IT-BCi']
+sites = snapshot[snapshot['site_id'].isin(target_sites)]
+
+# mapping
+fig, ax = plt.subplots(figsize=(10, 5))
+world.plot(ax=ax, color='lightgray', edgecolor='white')
+
+# presenting
+ax.scatter(sites['location_long'], sites['location_lat'],
+           color='red', s=60, zorder=5, edgecolor='black', linewidth=0.5)
+
+# labelling
+for _, row in sites.iterrows():
+    ax.annotate(row['site_id'],
+                (row['location_long'] + 3, row['location_lat'] + 3),
+                fontsize=9, weight='bold')
+
+ax.set_title('Locations of the Five Flux Towers')
+ax.set_xlabel('Longitude (°)')
+ax.set_ylabel('Latitude (°)')
+plt.tight_layout()
+plt.show()
+```
+
+## C2. Data Coverage(heatmap)
+```{python}
+#| label: read data
+# read_hh 
+def read_hh(zip_file: Path) -> pd.DataFrame:
+    parts = zip_file.stem.split("_")
+    site = parts[1]
+    years = parts[3]
+
+    keep = ["TIMESTAMP_START", "TIMESTAMP_END", "TA_F", "SW_IN_F", "VPD_F", "P_F",
+            "NETRAD", "G_F_MDS", "H_F_MDS", "H_F_MDS_QC", "LE_F_MDS", "LE_F_MDS_QC",
+            "NEE_VUT_REF", "NEE_VUT_REF_QC", "GPP_NT_VUT_REF", "RECO_NT_VUT_REF"]
+
+    with zipfile.ZipFile(zip_file) as z, z.open(
+        next(n for n in z.namelist() if "FLUXNET_FLUXMET_HH" in n)
+    ) as f:
+        hh = pd.read_csv(f, na_values=[-9999],
+                         usecols=lambda c: c in keep,
+                         dtype={"TIMESTAMP_START": str, "TIMESTAMP_END": str})
+
+    hh["time"] = pd.to_datetime(hh["TIMESTAMP_START"], format="%Y%m%d%H%M")   
+    hh["site"] = site  
+
+    y_start, y_end = map(int, years.split("-"))
+    t_min, t_max = hh["time"].min(), hh["time"].max()
+    assert t_min.year == y_start, f"{site}: start year not same ({t_min.year} != {y_start})"
+    assert t_max.year == y_end,   f"{site}: end year not same ({t_max.year} != {y_end})"
+    assert not hh["time"].duplicated().any(), f"{site}: duplicate timestamps exist"
+
+    n_by_year = hh.groupby(hh["time"].dt.year).size()
+    bad = n_by_year[(n_by_year != 17520) & (n_by_year != 17568)]
+    if len(bad):
+        print(f"⚠ {site}: the year row number ist different:\n{bad}")
+
+    return hh[["site", "time"] +
+              [c for c in keep if c not in ("TIMESTAMP_START", "TIMESTAMP_END")]]
+
+DATA_DIR = Path.cwd()
+while not (DATA_DIR / "data" / "raw").exists() and DATA_DIR != DATA_DIR.parent:
+    DATA_DIR = DATA_DIR.parent
+
+zip_files = sorted((DATA_DIR / "data" / "raw").glob("*.zip"))
+assert zip_files, f"no zip! cwd: {Path.cwd()}, DATA_DIR: {DATA_DIR}"
+
+# 5 tower all 
+all_hh = pd.concat([read_hh(f) for f in zip_files],   
+                   ignore_index=True)                 
+print(all_hh.shape)
+```
+
+```{python}
+#| label: fig-qc-heatmap
+#| fig-cap: "Share of half-hours with measured NEE (QC == 0) by site and year"
+
+all_hh['year'] = all_hh['time'].dt.year
+
+qc_share = (all_hh
+            .groupby(['site', 'year'])['NEE_VUT_REF_QC']
+            .apply(lambda s: (s == 0).mean())
+            .rename('share')
+            .reset_index())
+
+pivot = qc_share.pivot(index='site', columns='year', values='share')
+pivot = pivot.reindex(['US-MOz', 'IL-Yat', 'JP-SMF', 'CH-Fru', 'IT-BCi'])  
+
+fig, ax = plt.subplots(figsize=(14, 4))
+im = ax.imshow(pivot.values, aspect='auto', cmap='RdYlGn',
+               vmin=0, vmax=1, interpolation='nearest')
+ax.set_xticks(range(len(pivot.columns)))
+ax.set_xticklabels(pivot.columns, rotation=90, fontsize=8)
+ax.set_yticks(range(len(pivot.index)))
+ax.set_yticklabels(pivot.index)
+ax.set_xlabel('Year')
+ax.set_ylabel('Site')
+ax.set_title('Share of Half-Hours with Measured NEE (QC == 0)')
+fig.colorbar(im, ax=ax, label='Share measured')
+plt.tight_layout()
+plt.show()
+
+```
+
+best data?
+1. US-MOz has the best data coverage, with the share of measured NEE consistently above 50%
+2. JP-SMF shows the poorest coverage. 
+3. For US-MOz, 2011 was peaking year for the data coverage (near 80~90%)
+
+## C3. Summary statistics
+
+```{python}
+#| label: site-stat-tables
+
+# ── 1. variables ────────────────
+units = {
+    'TA_F':            '°C',
+    'SW_IN_F':         'W m⁻²',
+    'VPD_F':           'hPa',
+    'P_F':             'mm yr⁻¹',   
+    'NEE_VUT_REF':     'µmol CO₂ m⁻² s⁻¹',
+    'GPP_NT_VUT_REF':  'µmol CO₂ m⁻² s⁻¹',
+    'RECO_NT_VUT_REF': 'µmol CO₂ m⁻² s⁻¹',
+    'H_F_MDS':         'W m⁻²',
+    'LE_F_MDS':        'W m⁻²',
+}
+
+stat_vars = list(units.keys())
+all_hh['year'] = all_hh['time'].dt.year   
+
+# ── 2. table by each site ─────────────────────────────
+site_tables = {}
+
+for site, g in all_hh.groupby('site'):
+    rows = []
+    for var in stat_vars:
+        s = g[var]
+
+        if var == 'P_F':
+            annual_sum = g.groupby('year')['P_F'].sum(min_count=1)
+            mean_val = annual_sum.mean()
+        else:
+            mean_val = s.mean()
+
+        rows.append({
+            'Variable': f"{var} ({units[var]})",
+            'Mean':     mean_val,
+            'Min':      s.min(),
+            'Max':      s.max(),
+            '% Missing': s.isna().mean() * 100,
+        })
+
+    site_tables[site] = pd.DataFrame(rows).round(2)
+    display(site_tables[site].style.hide(axis='index')
+            .set_caption(f"Site: {site}"))
+```
+
+## C4. Time Series
+
+```{python}
+#| label: c4-daily-aggregation
+#| fig-cap: "Daily NEE, GPP and RECO (g C m⁻² d⁻¹) for the five sites"
+
+# ── 1.half hourly → daily average ───────────────────────────────────
+all_hh['date'] = all_hh['time'].dt.normalize() 
+
+flux_vars = ['NEE_VUT_REF', 'GPP_NT_VUT_REF', 'RECO_NT_VUT_REF']
+
+daily = (all_hh
+         .groupby(['site', 'date'])[flux_vars]
+         .mean()
+         .reset_index())
+
+# ── 2. unit conversion : µmol CO₂ m⁻² s⁻¹ → g C m⁻² d⁻¹ ─────────────
+CONV = 1.0378
+for v in flux_vars:
+    daily[v + '_gC'] = daily[v] * CONV
+
+daily.head(3)
+```
+
+```{python}
+#| label: fig-c4-timeseries
+#| fig-cap: "Daily carbon fluxes over the whole record, one panel per site"
+
+sites = ['US-MOz', 'IL-Yat', 'JP-SMF', 'CH-Fru', 'IT-BCi']
+colors = {'NEE': 'tab:green', 'GPP': 'tab:orange', 'RECO': 'tab:red'}
+
+fig, axes = plt.subplots(len(sites), 1, figsize=(12, 14), sharex=False)
+
+for ax, site in zip(axes, sites):
+    d = daily[daily['site'] == site]
+
+    ax.plot(d['date'], d['NEE_VUT_REF_gC'],  color=colors['NEE'],  lw=0.7, label='NEE')
+    ax.plot(d['date'], d['GPP_NT_VUT_REF_gC'], color=colors['GPP'], lw=0.7, label='GPP')
+    ax.plot(d['date'], d['RECO_NT_VUT_REF_gC'], color=colors['RECO'], lw=0.7, label='RECO')
+
+    ax.axhline(0, color='black', lw=0.5)
+    ax.set_ylabel('g C m⁻² d⁻¹')
+    ax.set_title(site)
+    ax.legend(loc='upper right', fontsize=8)
+
+axes[-1].set_xlabel('Date')
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+#| label: c4-check-against-dd
+check_site = 'US-MOz'
+zip_file = next(f for f in sorted((DATA_DIR / "data" / "raw").glob("*.zip"))
+                if check_site in f.stem)
+
+# ── DD file ───────────────────────────────────────────────
+dd_name = next(n for n in zipfile.ZipFile(zip_file).namelist()
+               if "FLUXNET_FLUXMET_DD" in n)          
+
+TS_COL   = 'TIMESTAMP'
+NEE_COL  = 'NEE_VUT_REF'
+GPP_COL  = 'GPP_NT_VUT_REF'
+RECO_COL = 'RECO_NT_VUT_REF'
+
+with zipfile.ZipFile(zip_file) as z, z.open(dd_name) as f:
+    dd = pd.read_csv(f, na_values=[-9999],
+                    usecols=[TS_COL, NEE_COL, GPP_COL, RECO_COL],
+                    dtype={TS_COL: str})
+
+dd["date"] = pd.to_datetime(dd[TS_COL], format="%Y%m%d")
+dd = dd.rename(columns={NEE_COL: 'NEE_VUT_REF',
+                        GPP_COL: 'GPP_NT_VUT_REF',
+                        RECO_COL: 'RECO_NT_VUT_REF'})[["date"] + flux_vars]
+
+# ── compare with mine ─────────────────────────────────────
+mine = daily[daily['site'] == check_site][['date'] + flux_vars]
+comp = mine.merge(dd, on='date', suffixes=('_mine', '_dd'))
+
+print(f"check site: {check_site}, checking period: {len(comp)} days")
+for v in flux_vars:
+    diff = (comp[v + '_mine'] - comp[v + '_dd']).abs()
+    print(f"{v}: max diff = {diff.max():.6f}, mean diff = {diff.mean():.6f}")
+```
+
+
+## C5. Diurnal Cycle
+
+```{python}
+#| label: c5-season-hour-means
+
+# ── 1. southern hemisphere ──────────────────
+lat_map = (snapshot[['site_id', 'location_lat']]
+           .drop_duplicates()
+           .set_index('site_id')['location_lat'])
+
+# ── 2. weather column  ────────────────
+season_of_month = {12:'DJF', 1:'DJF', 2:'DJF',
+                   3:'MAM', 4:'MAM', 5:'MAM',
+                   6:'JJA', 7:'JJA', 8:'JJA',
+                   9:'SON', 10:'SON', 11:'SON'}
+
+def get_season(month, lat):
+    if lat < 0:
+        month = (month + 5) % 12 + 1   # for southern
+    return season_of_month[month]
+
+all_hh['month'] = all_hh['time'].dt.month
+all_hh['hour']  = all_hh['time'].dt.hour + all_hh['time'].dt.minute / 60  # 0.0~23.5
+all_hh['season'] = [get_season(m, lat_map[s]) for m, s in zip(all_hh['month'], all_hh['site'])]
+
+# ── 3. sites × weather × time ─────────────────────────────
+cycle = (all_hh
+         .groupby(['site', 'season', 'hour'])[['NEE_VUT_REF', 'LE_F_MDS']]
+         .mean()
+         .reset_index())
+
+print(cycle.head(3))
+print("\n weather by sites:")
+print(all_hh.groupby('site')['season'].value_counts().unstack())
+```
+
+```{python}
+#| label: fig-c5-diurnal
+#| fig-cap: "Mean diurnal cycles of NEE and LE by season for the five sites"
+
+season_order = ['DJF', 'MAM', 'JJA', 'SON']
+season_colors = {'DJF': 'tab:blue', 'MAM': 'tab:green',
+                 'JJA': 'tab:red',  'SON': 'tab:orange'}
+
+fig, axes = plt.subplots(len(sites), 2, figsize=(12, 16))
+
+for i, site in enumerate(sites):
+    for season in season_order:
+        d = cycle[(cycle['site'] == site) & (cycle['season'] == season)]
+        if d.empty:
+            continue
+        axes[i, 0].plot(d['hour'], d['NEE_VUT_REF'], color=season_colors[season], label=season)
+        axes[i, 1].plot(d['hour'], d['LE_F_MDS'],   color=season_colors[season], label=season)
+
+    axes[i, 0].set_ylabel(f'{site}\nNEE (µmol m⁻² s⁻¹)')
+    axes[i, 1].set_ylabel('LE (W m⁻²)')
+    axes[i, 0].axhline(0, color='black', lw=0.5)
+    axes[i, 1].axhline(0, color='black', lw=0.5)
+    axes[i, 0].set_xlim(0, 24)
+    axes[i, 1].set_xlim(0, 24)
+
+for ax in axes[-1]:
+    ax.set_xlabel('Hour of day')
+
+axes[0, 0].legend(fontsize=8, title='Season')
+plt.tight_layout()
+plt.show()
+```
+
+## C6. Your reading
+```{python}
+#| label: c6-energy-balance
+#| fig-cap: "Energy balance closure: (H + LE) vs (NETRAD - G)"
+
+# ── 1. fing sites ──────────────────────────
+avail = all_hh.groupby('site')[['NETRAD', 'G_F_MDS']].apply(
+    lambda g: g.notna().mean()
+)
+print("percentage of not missing:")
+print(avail.round(3))
+
+# available sites
+ok_sites = avail[(avail['NETRAD'] > 0.5) & (avail['G_F_MDS'] > 0.5)].index.tolist()
+print("\navailable sites:", ok_sites)
+
+eb_site = 'US-MOz'
+
+# ── 2. H, LE (QC==0) use only half hourly ────────────────────
+eb = all_hh[
+    (all_hh['site'] == eb_site) &
+    (all_hh['H_F_MDS_QC'] == 0) &
+    (all_hh['LE_F_MDS_QC'] == 0) &
+    all_hh['NETRAD'].notna() &      
+    all_hh['G_F_MDS'].notna()       
+].copy()
+
+x = eb['NETRAD'] - eb['G_F_MDS']   # available energy
+y = eb['H_F_MDS'] + eb['LE_F_MDS'] # used energy
+
+# ── 3. slope of OLs ────────────────────────────────────────
+slope, intercept = np.polyfit(x, y, 1)
+print(f"\n{eb_site}: slope = {slope:.3f}, intercept = {intercept:.2f}, n = {len(eb)}")
+
+# ── 4. scatterplot ──────────────────────────────────────────────────
+fig, ax = plt.subplots(figsize=(6, 6))
+
+ax.scatter(x, y, s=2, alpha=0.15, color='tab:blue')
+lims = [min(x.min(), y.min()), max(x.max(), y.max())]
+ax.plot(lims, lims, 'k--', lw=1, label='1:1 line')                  # 1:1 
+ax.plot(lims, slope*np.array(lims)+intercept, 'r-', lw=1.5,
+        label=f'fit: slope = {slope:.2f}')
+
+ax.set_xlabel('NETRAD − G_F_MDS (W m⁻²)')
+ax.set_ylabel('H_F_MDS + LE_F_MDS (W m⁻²)')
+ax.set_title(f'Energy Balance Closure — {eb_site}')
+ax.legend()
+ax.set_aspect('equal')
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+#| label: hle-measured-share
+
+# H,LE non-gap filled rate
+measured_share = all_hh.groupby('site').apply(
+    lambda g: pd.Series({
+        'H measured (%)':  (g['H_F_MDS_QC'] == 0).mean() * 100,
+        'LE measured (%)': (g['LE_F_MDS_QC'] == 0).mean() * 100,
+    })
+).round(1)
+
+display(measured_share)
+```
+
+
+1. Site Comparison
+1-1. CH-Fru, IT-BCi, JP-SMF, and US-MOz
+At these four sites, NEE reaches its lowest values around midday and NEE values are also generally lower in JJA (summer) than in other seasons. Similarly, LE (latent heat flux) reaches its highest values around midday due to sufficient sunlight and higher temperatures, with the highest evaporation activity occurring during JJA. 2
+1-2. IL-Yat (semi-Mediterranean , dry region)
+From March to August, LE decreases due to water limitation and NEE increases as plants reduce photosynthesis to minimize water loss. Plants also tend to avoid midday, resulting in two distinct daily NEE peaks outside midday.  2
+2. Energy Balance Closure Problem (US-MOz, Tall Forest)
+The energy balance closure ratio at US-MOz is approximately 0.639, meaning that turbulent fluxes account for only about 63.9% of the available energy measured by NETRAD. 
+(US-MOz site has the lowest gap-filled data for H, LE, each for 87.6,79.6 measured proportion)
+
+
+## Data and citation
+
+### Data
+
+The site metadata were taken from the FLUXNET Shuttle snapshot
+`data/snapshots/fluxnet_shuttle_snapshot_20261113T113806.csv`.
+Half-hourly (`FLUXNET_FLUXMET_HH`) and daily (`FLUXNET_FLUXMET_DD`) data
+products were downloaded as zip archives (e.g.
+`AMF_US-MOz_FLUXNET_FLUXMET_HH_2004-2021_v1.3_r1.zip`), all with product
+version **ONEFlux v1.3, release r1** (2026 release).
+
+
+### Site citations
+
+```{python}
+#| label: site-citations
+#| echo: false
+for _, row in site_summary.iterrows():
+    print(f"**{row['Site ID']}** ({row['Name']}, {row['Country']}): {row['Citation']}")
+```
+
+### Reference
+
+Pastorello, G., Trotta, C., Canfora, E. et al. (2020). The FLUXNET2015
+dataset and the ONEFlux processing pipeline toward eddy covariance
+aggregated data products of greenhouse gas fluxes and meteorological
+variables. *Scientific Data*, 7, 225. https://doi.org/10.1038/s41597-020-0534-3
+
+### Acknowledgements
+> FLUXNET data products were produced and harmonized by eddy covariance regional
+> networks and data processing centers, including AmeriFlux, ChinaFlux, European
+> Fluxes Database, ICOS, JapanFlux, KoFlux, OzFlux, SAEON, and TERN. These products
+> also include a modified version of ERA5 hourly data provided by the Copernicus
+> Climate Change Service.
