@@ -1,0 +1,542 @@
+---
+title: "Block 5: Data summary of my neighboring sites"
+author: "SEOYOUNG KIM"
+date: today
+format:
+  html:
+    toc: true
+    embed-resources: true
+execute:
+  warning: false
+  dir: ".."
+---
+```{python}
+#| label: 0. import packages
+
+# Standard library
+import zipfile
+from pathlib import Path
+
+# Automatically locate the project root
+current_dir = Path.cwd()
+
+project_dir = next(
+    (
+        p for p in [current_dir, *current_dir.parents]
+        if (
+            (p / "data" / "processed" / "site_static.csv").exists()
+            and
+            (p / "data" / "processed" / "site_daily.csv").exists()
+        )
+    ),
+    None
+)
+
+if project_dir is None:
+    raise FileNotFoundError(
+        "Cannot find the project directory."
+    )
+
+print("Project directory:", project_dir)
+
+print("Project directory:", project_dir)
+
+print(
+    "site_static:",
+    (project_dir / "data" / "processed" / "site_static.csv").exists()
+)
+
+print(
+    "site_daily:",
+    (project_dir / "data" / "processed" / "site_daily.csv").exists()
+)
+
+# Third-party
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import seaborn as sns
+from IPython.display import display
+
+# Set the style for the plots
+plt.style.use('seaborn-v0_8-whitegrid')
+plt.rcParams['font.size'] = 10
+```
+
+
+## 1. Data
+
+| Dataset | Variables Used |
+|:---|:---|
+| ERA5-Land | Soil moisture (swvl1–3), air temperature |
+| WorldClim | BIO1, BIO12 |
+| DHEED | Event occurrence |
+| SoilGrids | Clay, sand, soil organic carbon |
+| PlantTraits | Specific Leaf Area (SLA) |
+| iNaturalist | Species richness |
+| MODIS | NDVI, EVI |
+
+
+
+## 2. Provenance Table
+
+<div style="overflow-x: auto;">
+
+| Dataset | Source | Spatial Resolution | Temporal Coverage | Date Accessed | Citation |
+|:---|:---|:---|:---|:---|:---|
+| ERA5-Land | Copernicus Climate Data Store (CDS) | 0.1° (~9 km) | 1950–present, hourly | 2026-11-26 | Muñoz-Sabater et al. (2021) |
+| WorldClim 2.1 | WorldClim | 5′ (~9 km) | Climate normals (1970–2000) | 2026-11-26 | Fick & Hijmans (2017) |
+| DHEED | Zenodo DHEED dataset | 0.25° (~28 km) | 1950–2023, daily | 2026-11-26 | Weynants et al. (2025) |
+| SoilGrids 2.0 | ISRIC SoilGrids | 250 m | Static soil properties | 2026-11-26 | Poggio et al. (2021) |
+| PlantTraits | University of Freiburg planttraits.earth | 1 km × 1 km grid cells (1 km²) | Static spatial dataset | 2026-11-26 | Lusk et al. (2026) |
+| iNaturalist | iNaturalist contributors | Individual georeferenced observation coordinates | 2004–2026 | 2026-11-26 | iNaturalist contributors (2026) |
+| MODIS MOD13Q1 | NASA LP DAAC / ORNL DAAC | 250 m | 2000–present, 16-day composites | 2026-11-26 | Didan (2021); ORNL DAAC (2018) |
+</div>
+
+
+## 3. Site portrait
+
+```{python}
+
+site_static = pd.read_csv(
+    project_dir / "data" / "processed" / "site_static.csv"
+)
+
+#| tbl-cap: "Site portrait of the five flux towers."
+
+site_portrait = (
+    site_static[
+        [
+            "site_id",
+            "BIO1",
+            "BIO12",
+            "soil0_30_sand",
+            "soil0_30_clay",
+            "soil0_30_soc",
+            "SLA",
+            "n_species"
+        ]
+    ]
+    .rename(
+        columns={
+            "site_id": "Site",
+            "BIO1": "BIO1 (°C)",
+            "BIO12": "BIO12 (mm)",
+            "soil0_30_sand": "Sand (%)",
+            "soil0_30_clay": "Clay (%)",
+            "soil0_30_soc": "SOC (g kg⁻¹)",
+            "SLA": "SLA (m² kg⁻¹)",
+            "n_species": "Species Richness"
+        }
+    )
+    .round(2)
+)
+
+site_portrait
+
+
+
+```
+
+Each SLA value of all 5 sites was predicted outside the area of applicability and therefore should be interpreted cautiously.
+
+
+## 4. Time Series
+```{python}
+#| label: timeseries-gpp-ndvi-evi
+
+# data
+
+print("project_dir:", project_dir)
+print("current_dir:", Path.cwd())
+
+print(
+    "File exists:",
+    (project_dir / "data" / "processed" / "site_daily.csv").exists()
+)
+
+
+site_daily = pd.read_csv(
+    project_dir / "data" / "processed" / "site_daily.csv", parse_dates=["date"]
+)
+
+# MODIS available period for each site
+
+ch_fru = site_daily[
+    (site_daily["site_id"] == "CH-Fru") &
+    (site_daily["date"] >= "2022-01-01") &
+    (site_daily["date"] <= "2024-12-31")
+].copy()
+
+il_yat = site_daily[
+    (site_daily["site_id"] == "IL-Yat") &
+    (site_daily["date"] >= "2022-01-01") &
+    (site_daily["date"] <= "2024-12-31")
+].copy()
+
+it_bci = site_daily[
+    (site_daily["site_id"] == "IT-BCi") &
+    (site_daily["date"] >= "2024-01-01") &
+    (site_daily["date"] <= "2026-11-01")
+].copy()
+
+jp_smf = site_daily[
+    (site_daily["site_id"] == "JP-SMF") &
+    (site_daily["date"] >= "2012-01-01") &
+    (site_daily["date"] <= "2014-12-31")
+].copy()
+
+us_moz = site_daily[
+    (site_daily["site_id"] == "US-MOz") &
+    (site_daily["date"] >= "2019-01-01") &
+    (site_daily["date"] <= "2021-12-31")
+].copy()
+
+
+
+# plot
+
+fig, axes = plt.subplots(
+    5, 1,
+    figsize=(12, 15)
+)
+
+dfs = [
+    ("CH-Fru", ch_fru),
+    ("IL-Yat", il_yat),
+    ("IT-BCi", it_bci),
+    ("JP-SMF", jp_smf),
+    ("US-MOz", us_moz)
+]
+
+for ax, (site, df) in zip(axes, dfs):
+
+    ax.plot(
+        df["date"],
+        df["GPP_NT_VUT_REF"],
+        color="forestgreen",
+        label="GPP"
+    )
+
+    ax.set_title(site)
+
+    ax_r = ax.twinx()
+
+    ax_r.plot(
+        df["date"],
+        df["ndvi"],
+        color="orange",
+        label="NDVI"
+    )
+
+    ax_r.plot(
+        df["date"],
+        df["evi"],
+        color="royalblue",
+        label="EVI"
+    )
+
+    ax_r.set_ylim(0, 1)
+
+    ax.set_ylabel("GPP (g C m$^{-2}$ d$^{-1}$)")
+
+    ax_r.set_ylabel("NDVI / EVI", color="black")
+
+
+fig.suptitle(
+    "Relationship between GPP and MODIS Vegetation Indices",
+    fontsize=16,
+    fontweight="bold"
+)   
+
+plt.tight_layout()
+plt.show()
+
+```
+
+### Interpretation of graph
+
+* CH-Fru, JP-SMF, and US-MOz showed a strong seasonal correspondence between GPP and the vegetation indices (NDVI and EVI). In these sites, both indices generally followed the seasonal dynamics of GPP, with higher values during the growing season and lower values during winter.
+* In contrast, IL-Yat and IT-BCi exhibited a weaker relationship between vegetation indices and GPP. NDVI and EVI describe canopy greenness, whereas GPP measures carbon uptake through photosynthesis. Therefore, periods of high canopy greenness did not always coincide with maximum photosynthetic activity, indicating a partial decoupling between vegetation structure and ecosystem productivity.
+
+
+## 5. One Question : Extreme events
+```{python}
+#| label: read-data-dheed-extreme-events
+#| fig-cap: "Daily NEE, GPP and RECO (g C m⁻² d⁻¹) for the site"
+
+moz = site_daily[
+    site_daily["site_id"] == "US-MOz"
+].copy()
+
+
+event = moz[
+    moz["dheed_event"] == True
+]
+
+event_start = event["date"].min()
+event_end   = event["date"].max()
+
+print("event start day :", event_start)
+print("event end day :", event_end)
+
+moz_event = moz[
+    moz["date"].dt.year.isin([2011, 2012, 2013])
+].copy()
+
+
+
+
+window = (
+    (moz_event["date"].dt.month == 7) &
+    (moz_event["date"].dt.day >= 17)
+) | (
+    (moz_event["date"].dt.month == 8) &
+    (moz_event["date"].dt.day <= 2)
+)
+
+
+box = moz_event[window].copy()
+
+box["year"] = box["date"].dt.year
+box["period"] = box["year"].astype(str)
+
+box.loc[
+    box["year"] == 2012,
+    "period"
+] = "2012 DHEED"
+
+#plotting
+fig,(ax1, ax2) = plt.subplots(1, 2, figsize=(6, 5))
+
+sns.boxplot(
+    data=box,
+    x="period",
+    y="GPP_NT_VUT_REF",ax=ax1
+)
+
+sns.boxplot(
+    data=box,
+    x="period",
+    y="NEE_VUT_REF",ax=ax2
+)
+
+ax1.set_title("GPP")
+ax2.set_title("NEE")
+
+ax1.set_ylabel("GPP (g C m$^{-2}$ d$^{-1}$)")
+ax2.set_ylabel("NEE (g C m$^{-2}$ d$^{-1}$)")
+
+ax1.set_xlabel("Year")
+ax2.set_xlabel("Year")
+
+fig.suptitle(
+    "Fluxes during Jul 17–Aug 02\n(US-MOz DHEED comparison)",
+    fontsize=14
+)
+plt.show()
+
+
+
+
+```
+
+
+```{python}
+#| tbl-cap: "mean value comparison table comparison table for the site US_MOz during DHEED event (17 Jul–02 Aug 2011-2013)"
+
+
+summary = (
+    box
+    .groupby("year")
+    .agg(
+        GPP_mean=("GPP_NT_VUT_REF", "mean"),
+        NEE_mean=("NEE_VUT_REF", "mean"),
+        VPD_mean=("VPD_F", "mean"),
+        TA_mean=("TA_F", "mean")
+    )
+    .round(2)
+    .reset_index()
+)
+
+summary["year"] = summary["year"].replace({
+    2012: "2012 DHEED"
+})
+
+summary = summary.rename(columns={
+    "GPP": "GPP (g C m⁻² d⁻¹)",
+    "NEE": "NEE (g C m⁻² d⁻¹)",
+    "VPD": "VPD (hPa)",
+    "TA": "TA (°C)"
+})
+
+summary.style.format({
+    "GPP": "{:.2f}",
+    "NEE": "{:.2f}",
+    "VPD": "{:.2f}",
+    "TA": "{:.2f}"
+})
+
+
+display(summary)
+```
+
+
+```{python}
+#| fig-cap: "Daily GPP, NEE and VPD for US-MOz (2011–2013). The shaded area indicates the DHEED event period (17 Jul–02 Aug)."
+
+
+fig, (ax1, ax2, ax3) = plt.subplots(3,1, figsize=(10,10),sharex=True)
+
+for y in [2011, 2012, 2013]:
+
+    tmp = moz[
+        moz["date"].dt.year == y
+    ]
+
+    ax1.plot(
+        tmp["date"].dt.day_of_year,
+        tmp["GPP_NT_VUT_REF"],
+        label=str(y)
+    )
+
+for y in [2011, 2012, 2013]:
+
+    tmp = moz[
+        moz["date"].dt.year == y
+    ]
+
+    ax2.plot(
+        tmp["date"].dt.day_of_year,
+        tmp["NEE_VUT_REF"],
+        label=str(y)
+    )
+
+for y in [2011, 2012, 2013]:
+
+    tmp = moz[
+        moz["date"].dt.year == y
+    ]
+
+    ax3.plot(
+        tmp["date"].dt.day_of_year,
+        tmp["VPD_F"],
+        label=str(y)
+    )
+
+for axx in [ax1, ax2, ax3]:
+
+    axx.axvspan(
+        event_start.day_of_year,
+        event_end.day_of_year,
+        color="red",
+        alpha=0.25,
+        label="DHEED event\n(17 Jul–02 Aug 2012)"
+    )
+
+#month label
+ax3.set_xticks([1, 32, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335])
+ax3.set_xticklabels(
+    ["Jan","Feb","Mar","Apr","May","Jun",
+     "Jul","Aug","Sep","Oct","Nov","Dec"]
+)
+ax3.set_xlabel("Month")
+
+# ---------- Labels ----------
+ax1.set_ylabel("GPP\n(g C m$^{-2}$ d$^{-1}$)")
+
+ax2.set_ylabel("NEE\n(g C m$^{-2}$ d$^{-1}$)")
+
+ax3.set_ylabel("VPD (kPa)")
+
+for axx in [ax1, ax2, ax3]:
+    axx.legend()
+
+fig.suptitle(
+    "US-MOz Daily Fluxes During 2011–2013",
+    fontsize=16,
+    fontweight="bold"
+)
+
+plt.tight_layout(rect=[0, 0, 1, 0.97])
+
+plt.tight_layout()
+plt.show()
+
+```
+
+
+### Results
+
+**1. Target Site and Analysis Background**
+
+US-MOz is a flux tower located in Missouri, USA, within a deciduous broadleaf forest ecosystem characterized by hot, humid summers and relatively cold winters. During the observation period (2004–2021), only one extreme event meeting the DHEED criteria was identified. This event occurred from 17 July to 2 August 2012. To assess its ecological impacts, ecosystem responses during the event period were compared with those observed during the same calendar period in the years before and after the event.
+
+**2. Results comparison 2012(DHeed period) vs  2011, 1013**
+The 2012 DHEED period showed lower GPP, less negative NEE, higher VPD, and higher air temperature than the same calendar periods in 2011 and 2013.
+
+**3. limitation of results**
+
+1. No clear evidence of a drought legacy effect was observed in 2013 at US-MOz. However, legacy effects were evaluated only using one post-event year (2013), making it difficult to determine whether longer-term impacts occurred.
+
+2. Problem of different spatial resolution (Detailed in the following section 6)  
+
+
+## 6. Scale of Dataset
+
+| Dataset | Spatial Resolution |
+|----------|----------|
+| ERA5-Land | 0.1° (~9 km) |
+| WorldClim 2.1 | 5′ (~9 km) |
+| DHEED | 0.25° (~28 km) |
+| SoilGrids 2.0 | 250 m |
+| PlantTraits | 1 km |
+| iNaturalist | Point observations (variable location) |
+| MODIS MOD13Q1 | 250 m (native resolution); 9 × 9 pixel window (~2.25 × 2.25 km) used in this study |
+
+** what does it mean to my question? **
+
+DHEED events were identified using ERA5 grid cells (0.25° ≈ 25 km × 25 km), whereas flux measurements represent local ecosystem conditions within a footprint of only a few hundred metres. Consequently, a DHEED event detected for the grid cell may not necessarily indicate that the tower footprint experienced the same intensity of stress. Conversely, local ecosystem stress observed at the tower may not always be captured by the coarser DHEED grid. Therefore, scale mismatches introduce uncertainty when linking DHEED events to observed ecosystem responses.
+
+
+### Reference
+
+1. Muñoz-Sabater, J., et al. (2021). ERA5-Land: A state-of-the-art global reanalysis dataset for land applications. *Earth System Science Data, 13*, 4349–4383. DOI: 10.5194/essd-13-4349-2021.
+
+2. Fick, S. E., & Hijmans, R. J. (2017). WorldClim 2: New 1-km spatial resolution climate surfaces for global land areas. *International Journal of Climatology, 37*, 4302–4315. DOI: 10.1002/joc.5086.
+
+3. Weynants, M., et al. (2025). DHEED dataset. *Earth System Science Data, 17*, 6621. Dataset DOI: 10.5281/zenodo.14884254.
+
+4. Poggio, L., et al. (2021). SoilGrids 2.0: Producing soil information for the globe with quantified spatial uncertainty. *SOIL, 7*, 217–240.
+
+5. Lusk, J., et al. (2026). *Nature Communications, 17*, 1203. DOI: 10.1038/s41467-026-68996-y. Dataset DOI: 10.5281/zenodo.14646322.
+
+6. iNaturalist contributors. (2026). *iNaturalist*. https://www.inaturalist.org. Accessed November 26, 2026.
+
+7. Didan, K. (2021). *MODIS/Terra Vegetation Indices 16-Day L3 Global 250m SIN Grid, Version 6.1 (MOD13Q1)*. NASA LP DAAC. DOI: 10.5067/MODIS/MOD13Q1.061.
+
+8. ORNL DAAC. (2018). MODIS vegetation indices data. DOI: 10.3334/ORNLDAAC/1557.
+
+
+9. Pastorello, G., Trotta, C., Canfora, E. et al. (2020). The FLUXNET2015
+dataset and the ONEFlux processing pipeline toward eddy covariance
+aggregated data products of greenhouse gas fluxes and meteorological
+variables. *Scientific Data*, 7, 225. https://doi.org/10.1038/s41597-020-0534-3
+
+10. Wood, J., & Gu, L. (2026). *AmeriFlux FLUXNET-1F US-MOz Missouri Ozark Site, Ver. v1.3_r1 (2004–2021)*. AmeriFlux AMP (Dataset). DOI: 10.17190/AMF/1854370.
+
+11. Kotani, A., Ohta, T., & Ohta, T. (2026). *Fluxnet Archive Product from Seto Mixed Forest Site, 2002–2014*. FLUXNET. https://hdl.handle.net/11676/OJmZUckooZnjzhPVMCBvUM85.
+
+12. Magliulo, V., Calandrelli, D., Cuocolo, D., Di Tommasi, P., Esposito, A., Famulari, D., Manco, A., Vitale, L., & Zenone, T. (2026). *Fluxnet Archive Product from Borgo Cioffi, 2004-01-01–2026-09-06*. FLUXNET. https://hdl.handle.net/11676/QcwmmUDyX5MXPIYAuDq5vepJ.
+
+13. Rotenberg, E., Schwartz, E., & Yakir, D. (2026). *Fluxnet Archive Product from Yatir, 2000–2024*. FLUXNET. https://hdl.handle.net/11676/ddBS_ZLjXuBI8SSQV2cskqda.
+
+14. Buchmann, N., Hortnagl, L., Zeeman, M., Merbold, L., Fuchs, K., Feigenwinter, I., Burri, S., Baur, T., & Meier, P. (2025). *Fluxnet Archive Product from Fruebuel, 2005–2024*. FLUXNET. https://hdl.handle.net/11676/xnRKIWdx6isC5GLqv_pHq5hU.
+
+
+### Acknowledgements
+> FLUXNET data products were produced and harmonized by eddy covariance regional
+> networks and data processing centers, including AmeriFlux, ChinaFlux, European
+> Fluxes Database, ICOS, JapanFlux, KoFlux, OzFlux, SAEON, and TERN. These products
+> also include a modified version of ERA5 hourly data provided by the Copernicus
+> Climate Change Service.
